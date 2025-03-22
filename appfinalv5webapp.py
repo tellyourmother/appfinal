@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 from sklearn.preprocessing import StandardScaler
 import time
-from nba_api.stats.endpoints import LeagueDashTeamStat
+from nba_api.stats.endpoints import LeagueDashTeamStats
 
 st.set_page_config(layout="wide")
 st.title("🏀 NBA Player Performance Dashboard")
