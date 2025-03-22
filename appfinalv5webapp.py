@@ -1,4 +1,3 @@
-# ✅ All your imports remain the same
 import streamlit as st
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
@@ -7,16 +6,14 @@ import numpy as np
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import plotly.express as px
-from sklearn.preprocessing import StandardScaler
-import time
 
 st.set_page_config(layout="wide")
-st.title("🏀 NBA Player Performance Dashboard")
+st.title("🏀 NBA Player Stat Predictor")
 
-# ========== CACHED ==========
+# ========== Data Utils ==========
 @st.cache_data
 def get_player_options():
     return players.get_active_players()
@@ -30,7 +27,6 @@ def get_team_strength():
     df = LeagueDashTeamStats(season='2024-25', season_type_all_star='Regular Season').get_data_frames()[0]
     return df[['TEAM_NAME', 'W_PCT']]
 
-@st.cache_data
 def get_player_id(name):
     result = [p for p in get_player_options() if name.lower() in p["full_name"].lower()]
     return (result[0]['id'], result[0]['full_name']) if result else (None, None)
@@ -39,7 +35,6 @@ def get_player_id(name):
 def load_game_log(player_id):
     return PlayerGameLog(player_id=player_id, season='2024-25').get_data_frames()[0]
 
-# ========== DATA PREP ==========
 def preprocess_games(df, team_strength_df, team_map):
     df = df.copy()
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
@@ -47,17 +42,18 @@ def preprocess_games(df, team_strength_df, team_map):
     df['HOME'] = df['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     df['OPP_ABBR'] = df['MATCHUP'].str.extract(r'@ (\w+)|vs\. (\w+)').bfill(axis=1).iloc[:, 0]
     df['OPPONENT'] = df['OPP_ABBR'].map(team_map)
+
     df = df.merge(team_strength_df, left_on='OPPONENT', right_on='TEAM_NAME', how='left')
     df['W_PCT'] = df['W_PCT'].fillna(0.5)
 
-    base_stats = ['MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT', 'FG3A',
-                  'FG3_PCT', 'FTA', 'FT_PCT', 'STL', 'BLK', 'TOV', 'HOME']
-    for col in base_stats:
+    features = ['MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT', 'FG3A',
+                'FG3_PCT', 'FTA', 'FT_PCT', 'STL', 'BLK', 'TOV', 'HOME']
+    for col in features:
         df[f'{col}_prev'] = df[col].shift(1)
     df = df.dropna().reset_index(drop=True)
     return df
 
-# ========== MODEL ==========
+# ========== Modeling ==========
 def weighted_train(df, target, quantile):
     features = [col for col in df.columns if '_prev' in col]
     df['weight'] = np.linspace(0.3, 1, len(df))
@@ -78,7 +74,7 @@ def predict_with_intervals(df):
         uppers[stat] = model_high.predict(X_pred)[0]
     return preds, lowers, uppers
 
-# ========== VISUALS ==========
+# ========== Visuals ==========
 def plot_stat_trend(df, prediction):
     fig = make_subplots(rows=2, cols=2, subplot_titles=['MIN', 'PTS', 'REB', 'AST'])
     stat_map = ['MIN', 'PTS', 'REB', 'AST']
@@ -90,9 +86,10 @@ def plot_stat_trend(df, prediction):
         x_vals = list(df['Label']) + ['Predicted']
         avg_val = df[stat].mean()
         colors = ['tomato' if val > avg_val else 'skyblue' for val in df[stat]] + ['gold']
+
         fig.add_trace(go.Bar(x=x_vals, y=y_vals, marker_color=colors, name=stat), row=row, col=col)
-        fig.add_trace(go.Scatter(x=x_vals[:-1], y=df[stat].rolling(5).mean(), mode='lines',
-                                 line=dict(color='black', dash='dash'), name='Rolling Avg'), row=row, col=col)
+        fig.add_trace(go.Scatter(x=x_vals[:-1], y=df[stat].rolling(5).mean(), mode='lines', name='Rolling Avg',
+                                 line=dict(color='black', dash='dash')), row=row, col=col)
     fig.update_layout(height=800, title="📈 Last 15 Games + Prediction")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -126,12 +123,12 @@ def tier_breakdown_chart(df):
     df['TIER'] = df['OPPONENT'].apply(assign_tier)
     tier_avg = df.groupby('TIER')[['PTS', 'REB', 'AST']].mean().reset_index()
 
-    st.subheader("🏆 Performance vs Team Tiers")
+    st.subheader("📊 Performance vs Team Tiers (Based on W%)")
     fig = px.bar(tier_avg, x='TIER', y=['PTS', 'REB', 'AST'], barmode='group',
                  color_discrete_map={"PTS": "gold", "REB": "skyblue", "AST": "lightgreen"})
     st.plotly_chart(fig, use_container_width=True)
 
-# ========== STREAMLIT UI ==========
+# ========== UI ==========
 player_list = sorted([p["full_name"] for p in get_player_options()])
 player_name = st.selectbox("Search for a player", player_list, index=player_list.index("Jayson Tatum"))
 
@@ -147,16 +144,16 @@ if player_name:
     next_opponent = st.selectbox("Select next opponent team", team_abbr_list)
     st.markdown(f"**Next Opponent:** `{next_opponent}`")
 
-    tabs = st.tabs([
-        "📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", 
-        "🗺️ Heatmaps", "🏆 Tiers"  # 🕸️ Radar Chart tab removed
-    ])
+    # === TABS ===
+    tabs = st.tabs(["📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", "🗺️ Heatmaps", "🏆 Tiers"])
 
     with tabs[0]:
-        st.subheader("🔮 Predicted Stats (with confidence)")
+        st.subheader("🔮 Predicted Stats (with 10th–90th Percentile Range)")
         cols = st.columns(4)
         for i, stat in enumerate(['MIN', 'PTS', 'REB', 'AST']):
-            cols[i].metric(stat, f"{prediction[stat]:.1f}", f"{lower[stat]:.1f} – {upper[stat]:.1f}")
+            val = prediction[stat]
+            low, high = lower[stat], upper[stat]
+            cols[i].metric(stat, f"{val:.1f}", f"{low:.1f} – {high:.1f}")
 
     with tabs[1]:
         plot_stat_trend(df, prediction)
