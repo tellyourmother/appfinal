@@ -6,14 +6,16 @@ import numpy as np
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.express as px
+from sklearn.preprocessing import StandardScaler
+import time
 
 st.set_page_config(layout="wide")
-st.title("🏀 NBA Player Stat Predictor")
+st.title("🏀 NBA Player Performance Dashboard")
 
-# ========== Data Utils ==========
+# ========== CACHED DATA LOADING ==========
 @st.cache_data
 def get_player_options():
     return players.get_active_players()
@@ -27,6 +29,7 @@ def get_team_strength():
     df = LeagueDashTeamStats(season='2024-25', season_type_all_star='Regular Season').get_data_frames()[0]
     return df[['TEAM_NAME', 'W_PCT']]
 
+@st.cache_data
 def get_player_id(name):
     result = [p for p in get_player_options() if name.lower() in p["full_name"].lower()]
     return (result[0]['id'], result[0]['full_name']) if result else (None, None)
@@ -35,6 +38,7 @@ def get_player_id(name):
 def load_game_log(player_id):
     return PlayerGameLog(player_id=player_id, season='2024-25').get_data_frames()[0]
 
+# ========== DATA PREP ==========
 def preprocess_games(df, team_strength_df, team_map):
     df = df.copy()
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
@@ -42,18 +46,17 @@ def preprocess_games(df, team_strength_df, team_map):
     df['HOME'] = df['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     df['OPP_ABBR'] = df['MATCHUP'].str.extract(r'@ (\w+)|vs\. (\w+)').bfill(axis=1).iloc[:, 0]
     df['OPPONENT'] = df['OPP_ABBR'].map(team_map)
-
     df = df.merge(team_strength_df, left_on='OPPONENT', right_on='TEAM_NAME', how='left')
     df['W_PCT'] = df['W_PCT'].fillna(0.5)
 
-    features = ['MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT', 'FG3A',
-                'FG3_PCT', 'FTA', 'FT_PCT', 'STL', 'BLK', 'TOV', 'HOME']
-    for col in features:
+    base_stats = ['MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT', 'FG3A',
+                  'FG3_PCT', 'FTA', 'FT_PCT', 'STL', 'BLK', 'TOV', 'HOME']
+    for col in base_stats:
         df[f'{col}_prev'] = df[col].shift(1)
     df = df.dropna().reset_index(drop=True)
     return df
 
-# ========== Modeling ==========
+# ========== MODELING ==========
 def weighted_train(df, target, quantile):
     features = [col for col in df.columns if '_prev' in col]
     df['weight'] = np.linspace(0.3, 1, len(df))
@@ -74,7 +77,56 @@ def predict_with_intervals(df):
         uppers[stat] = model_high.predict(X_pred)[0]
     return preds, lowers, uppers
 
-# ========== Visuals ==========
+# ========== RADAR CHART ==========
+def plot_radar_chart(player_df, league_df, player_name, compare_player=None):
+    stats = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']
+    league_avg = league_df[stats].mean()
+    player_avg = player_df[stats].mean()
+
+    scaler = StandardScaler()
+    all_data = pd.DataFrame([player_avg, league_avg], index=[player_name, 'League Avg'])
+    z_scores = pd.DataFrame(scaler.fit_transform(all_data), columns=stats, index=all_data.index)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=z_scores.loc[player_name].values,
+        theta=stats,
+        fill='toself',
+        name=player_name,
+        line=dict(color='gold')
+    ))
+    fig.add_trace(go.Scatterpolar(
+        r=z_scores.loc['League Avg'].values,
+        theta=stats,
+        fill='toself',
+        name='League Avg',
+        line=dict(color='gray', dash='dot')
+    ))
+
+    if compare_player:
+        comp_id, _ = get_player_id(compare_player)
+        comp_df = load_game_log(comp_id)
+        comp_df = preprocess_games(comp_df, get_team_strength(), get_team_abbr_map())
+        comp_avg = comp_df[stats].mean()
+        all_data.loc[compare_player] = comp_avg
+        comp_z = scaler.transform([comp_avg])[0]
+
+        fig.add_trace(go.Scatterpolar(
+            r=comp_z,
+            theta=stats,
+            fill='toself',
+            name=compare_player,
+            line=dict(color='deepskyblue')
+        ))
+
+    fig.update_layout(
+        title="🕸️ Stat Profile (Z-Score Normalized)",
+        polar=dict(radialaxis=dict(visible=True, range=[-2.5, 2.5])),
+        showlegend=True
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ========== VISUALS ==========
 def plot_stat_trend(df, prediction):
     fig = make_subplots(rows=2, cols=2, subplot_titles=['MIN', 'PTS', 'REB', 'AST'])
     stat_map = ['MIN', 'PTS', 'REB', 'AST']
@@ -123,12 +175,12 @@ def tier_breakdown_chart(df):
     df['TIER'] = df['OPPONENT'].apply(assign_tier)
     tier_avg = df.groupby('TIER')[['PTS', 'REB', 'AST']].mean().reset_index()
 
-    st.subheader("📊 Performance vs Team Tiers (Based on W%)")
+    st.subheader("🏆 Performance vs Team Tiers")
     fig = px.bar(tier_avg, x='TIER', y=['PTS', 'REB', 'AST'], barmode='group',
                  color_discrete_map={"PTS": "gold", "REB": "skyblue", "AST": "lightgreen"})
     st.plotly_chart(fig, use_container_width=True)
 
-# ========== UI ==========
+# ========== STREAMLIT UI ==========
 player_list = sorted([p["full_name"] for p in get_player_options()])
 player_name = st.selectbox("Search for a player", player_list, index=player_list.index("Jayson Tatum"))
 
@@ -144,16 +196,16 @@ if player_name:
     next_opponent = st.selectbox("Select next opponent team", team_abbr_list)
     st.markdown(f"**Next Opponent:** `{next_opponent}`")
 
-    # === TABS ===
-    tabs = st.tabs(["📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", "🗺️ Heatmaps", "🏆 Tiers"])
+    tabs = st.tabs([
+        "📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", 
+        "🗺️ Heatmaps", "🏆 Tiers", "📊 Radar Chart"
+    ])
 
     with tabs[0]:
-        st.subheader("🔮 Predicted Stats (with 10th–90th Percentile Range)")
+        st.subheader("🔮 Predicted Stats (with confidence)")
         cols = st.columns(4)
         for i, stat in enumerate(['MIN', 'PTS', 'REB', 'AST']):
-            val = prediction[stat]
-            low, high = lower[stat], upper[stat]
-            cols[i].metric(stat, f"{val:.1f}", f"{low:.1f} – {high:.1f}")
+            cols[i].metric(stat, f"{prediction[stat]:.1f}", f"{lower[stat]:.1f} – {upper[stat]:.1f}")
 
     with tabs[1]:
         plot_stat_trend(df, prediction)
@@ -166,3 +218,23 @@ if player_name:
 
     with tabs[4]:
         tier_breakdown_chart(df)
+
+    with tabs[5]:
+        st.subheader("📊 Stat Profile Radar Chart")
+        compare = st.selectbox("Compare with another player (optional)", ["None"] + player_list)
+        compare_name = compare if compare != "None" else None
+
+        all_players = get_player_options()
+        league_data = []
+        for p in all_players[:100]:  # Limit to 100 for speed
+            try:
+                pid = p['id']
+                gdf = load_game_log(pid)
+                gdf = preprocess_games(gdf, team_strength, team_map)
+                league_data.append(gdf[["PTS", "REB", "AST", "STL", "BLK", "TOV"]].mean())
+            except:
+                continue
+        league_df = pd.DataFrame(league_data)
+
+        plot_radar_chart(df, league_df, player_name, compare_name)
+
