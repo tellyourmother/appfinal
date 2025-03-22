@@ -1,3 +1,4 @@
+# ✅ All your imports remain the same
 import streamlit as st
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
@@ -15,7 +16,7 @@ import time
 st.set_page_config(layout="wide")
 st.title("🏀 NBA Player Performance Dashboard")
 
-# ========== CACHED DATA LOADING ==========
+# ========== CACHED ==========
 @st.cache_data
 def get_player_options():
     return players.get_active_players()
@@ -56,7 +57,7 @@ def preprocess_games(df, team_strength_df, team_map):
     df = df.dropna().reset_index(drop=True)
     return df
 
-# ========== MODELING ==========
+# ========== MODEL ==========
 def weighted_train(df, target, quantile):
     features = [col for col in df.columns if '_prev' in col]
     df['weight'] = np.linspace(0.3, 1, len(df))
@@ -77,55 +78,6 @@ def predict_with_intervals(df):
         uppers[stat] = model_high.predict(X_pred)[0]
     return preds, lowers, uppers
 
-# ========== RADAR CHART ==========
-def plot_radar_chart(player_df, league_df, player_name, compare_player=None):
-    stats = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']
-    league_avg = league_df[stats].mean()
-    player_avg = player_df[stats].mean()
-
-    scaler = StandardScaler()
-    all_data = pd.DataFrame([player_avg, league_avg], index=[player_name, 'League Avg'])
-    z_scores = pd.DataFrame(scaler.fit_transform(all_data), columns=stats, index=all_data.index)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(
-        r=z_scores.loc[player_name].values,
-        theta=stats,
-        fill='toself',
-        name=player_name,
-        line=dict(color='gold')
-    ))
-    fig.add_trace(go.Scatterpolar(
-        r=z_scores.loc['League Avg'].values,
-        theta=stats,
-        fill='toself',
-        name='League Avg',
-        line=dict(color='gray', dash='dot')
-    ))
-
-    if compare_player:
-        comp_id, _ = get_player_id(compare_player)
-        comp_df = load_game_log(comp_id)
-        comp_df = preprocess_games(comp_df, get_team_strength(), get_team_abbr_map())
-        comp_avg = comp_df[stats].mean()
-        all_data.loc[compare_player] = comp_avg
-        comp_z = scaler.transform([comp_avg])[0]
-
-        fig.add_trace(go.Scatterpolar(
-            r=comp_z,
-            theta=stats,
-            fill='toself',
-            name=compare_player,
-            line=dict(color='deepskyblue')
-        ))
-
-    fig.update_layout(
-        title="🕸️ Stat Profile (Z-Score Normalized)",
-        polar=dict(radialaxis=dict(visible=True, range=[-2.5, 2.5])),
-        showlegend=True
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
 # ========== VISUALS ==========
 def plot_stat_trend(df, prediction):
     fig = make_subplots(rows=2, cols=2, subplot_titles=['MIN', 'PTS', 'REB', 'AST'])
@@ -138,10 +90,9 @@ def plot_stat_trend(df, prediction):
         x_vals = list(df['Label']) + ['Predicted']
         avg_val = df[stat].mean()
         colors = ['tomato' if val > avg_val else 'skyblue' for val in df[stat]] + ['gold']
-
         fig.add_trace(go.Bar(x=x_vals, y=y_vals, marker_color=colors, name=stat), row=row, col=col)
-        fig.add_trace(go.Scatter(x=x_vals[:-1], y=df[stat].rolling(5).mean(), mode='lines', name='Rolling Avg',
-                                 line=dict(color='black', dash='dash')), row=row, col=col)
+        fig.add_trace(go.Scatter(x=x_vals[:-1], y=df[stat].rolling(5).mean(), mode='lines',
+                                 line=dict(color='black', dash='dash'), name='Rolling Avg'), row=row, col=col)
     fig.update_layout(height=800, title="📈 Last 15 Games + Prediction")
     st.plotly_chart(fig, use_container_width=True)
 
@@ -198,7 +149,7 @@ if player_name:
 
     tabs = st.tabs([
         "📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", 
-        "🗺️ Heatmaps", "🏆 Tiers", "📊 Radar Chart"
+        "🗺️ Heatmaps", "🏆 Tiers"  # 🕸️ Radar Chart tab removed
     ])
 
     with tabs[0]:
@@ -218,23 +169,3 @@ if player_name:
 
     with tabs[4]:
         tier_breakdown_chart(df)
-
-    with tabs[5]:
-        st.subheader("📊 Stat Profile Radar Chart")
-        compare = st.selectbox("Compare with another player (optional)", ["None"] + player_list)
-        compare_name = compare if compare != "None" else None
-
-        all_players = get_player_options()
-        league_data = []
-        for p in all_players[:100]:  # Limit to 100 for speed
-            try:
-                pid = p['id']
-                gdf = load_game_log(pid)
-                gdf = preprocess_games(gdf, team_strength, team_map)
-                league_data.append(gdf[["PTS", "REB", "AST", "STL", "BLK", "TOV"]].mean())
-            except:
-                continue
-        league_df = pd.DataFrame(league_data)
-
-        plot_radar_chart(df, league_df, player_name, compare_name)
-
