@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 from xgboost import XGBRegressor
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
@@ -72,29 +72,30 @@ def run_models(df):
         X_train, X_test = X.iloc[:-1], X.iloc[-1:]
         y_train, y_test = y.iloc[:-1], y.iloc[-1:]
 
-        # LightGBM
         try:
             lgbm = lgb.LGBMRegressor()
             lgbm.fit(X_train, y_train)
             lgb_train_preds = lgbm.predict(X_train)
             lgb_test_pred = lgbm.predict(X_test)[0]
             lgb_mae = mean_absolute_error(y_train, lgb_train_preds)
+            lgb_r2 = r2_score(y_train, lgb_train_preds)
+            lgb_rmse = np.sqrt(mean_squared_error(y_train, lgb_train_preds))
         except Exception as e:
-            lgb_test_pred, lgb_mae = np.nan, np.nan
+            lgb_test_pred, lgb_mae, lgb_r2, lgb_rmse = np.nan, np.nan, np.nan, np.nan
             print(f"LightGBM error for {stat}: {e}")
 
-        # XGBoost
         try:
             xgb = XGBRegressor(verbosity=0)
             xgb.fit(X_train, y_train)
             xgb_train_preds = xgb.predict(X_train)
             xgb_test_pred = xgb.predict(X_test)[0]
             xgb_mae = mean_absolute_error(y_train, xgb_train_preds)
+            xgb_r2 = r2_score(y_train, xgb_train_preds)
+            xgb_rmse = np.sqrt(mean_squared_error(y_train, xgb_train_preds))
         except Exception as e:
-            xgb_test_pred, xgb_mae = np.nan, np.nan
+            xgb_test_pred, xgb_mae, xgb_r2, xgb_rmse = np.nan, np.nan, np.nan, np.nan
             print(f"XGBoost error for {stat}: {e}")
 
-        # Ensemble prediction + confidence bounds
         ensemble_pred = np.nanmean([lgb_test_pred, xgb_test_pred])
         prediction[stat] = round(ensemble_pred, 2)
         lower[stat] = round(min(lgb_test_pred, xgb_test_pred), 2)
@@ -106,12 +107,15 @@ def run_models(df):
             'LightGBM_Pred': round(lgb_test_pred, 2),
             'XGBoost_Pred': round(xgb_test_pred, 2),
             'LightGBM_MAE': round(lgb_mae, 2),
-            'XGBoost_MAE': round(xgb_mae, 2)
+            'XGBoost_MAE': round(xgb_mae, 2),
+            'LightGBM_R2': round(lgb_r2, 2),
+            'XGBoost_R2': round(xgb_r2, 2),
+            'LightGBM_RMSE': round(lgb_rmse, 2),
+            'XGBoost_RMSE': round(xgb_rmse, 2),
         })
 
     compare_df = pd.DataFrame(results)
     return prediction, lower, upper, compare_df
-
 
 # ========== VISUALIZATIONS ==========
 def plot_stat_trend(df, prediction):
@@ -166,6 +170,11 @@ def tier_breakdown_chart(df):
                  color_discrete_map={"PTS": "gold", "REB": "skyblue", "AST": "lightgreen"})
     st.plotly_chart(fig, use_container_width=True)
 
+def show_stat_distribution(df):
+    st.subheader("📈 Distribution of Key Stats")
+    fig = px.box(df, y=['PTS', 'REB', 'AST', 'MIN'], points='all')
+    st.plotly_chart(fig, use_container_width=True)
+
 # ========== STREAMLIT UI ==========
 player_list = sorted([p["full_name"] for p in get_player_options()])
 player_name = st.selectbox("Search for a player", player_list, index=player_list.index("Jayson Tatum"))
@@ -183,7 +192,7 @@ if player_name:
     st.markdown(f"**Next Opponent:** `{next_opponent}`")
 
     tabs = st.tabs([
-        "📊 Prediction", "📈 Trends", "🆚 Stats vs Teams", 
+        "📊 Prediction", "📈 Trends", "📊 Distribution", "🆚 Stats vs Teams", 
         "🗺️ Heatmaps", "🏆 Tiers"
     ])
 
@@ -195,21 +204,27 @@ if player_name:
 
         with st.expander("📊 Compare LightGBM vs XGBoost"):
             st.dataframe(compare_df)
-            mae_chart = compare_df[['Stat', 'LightGBM_MAE', 'XGBoost_MAE']].melt(
-                id_vars='Stat', var_name='Model', value_name='MAE'
-            )
-            fig = px.bar(mae_chart, x='Stat', y='MAE', color='Model', barmode='group',
-                         title="📉 Model MAE Comparison")
+            metric_melt = compare_df.melt(id_vars='Stat', value_vars=[
+                'LightGBM_MAE', 'XGBoost_MAE',
+                'LightGBM_R2', 'XGBoost_R2',
+                'LightGBM_RMSE', 'XGBoost_RMSE'
+            ], var_name='Metric_Model', value_name='Value')
+            metric_melt[['Metric', 'Model']] = metric_melt['Metric_Model'].str.extract(r'(.*)_(LightGBM|XGBoost)')
+            fig = px.bar(metric_melt, x='Stat', y='Value', color='Model', facet_row='Metric',
+                         barmode='group', height=600, title="📉 Model Metric Comparison")
             st.plotly_chart(fig, use_container_width=True)
 
     with tabs[1]:
         plot_stat_trend(df, prediction)
 
     with tabs[2]:
-        stat_vs_team_bar(df)
+        show_stat_distribution(df)
 
     with tabs[3]:
-        timeline_heatmap(df)
+        stat_vs_team_bar(df)
 
     with tabs[4]:
+        timeline_heatmap(df)
+
+    with tabs[5]:
         tier_breakdown_chart(df)
