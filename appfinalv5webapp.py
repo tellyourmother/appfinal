@@ -58,7 +58,7 @@ def preprocess_games(df, team_strength_df, team_map):
     return df
 
 # ========== MODEL: LightGBM vs XGBoost ==========
-def run_models(df):
+def run_models(df, window_size=5):
     stats = ['PTS', 'REB', 'AST', 'MIN']
     prediction = {}
     lower = {}
@@ -69,17 +69,22 @@ def run_models(df):
 
     for stat in stats:
         y = df[stat]
-        X_train, X_test = X.iloc[:-1], X.iloc[-1:]
-        y_train, y_test = y.iloc[:-1], y.iloc[-1:]
+
+        # Check if enough data for window
+        if len(df) < window_size + 1:
+            st.warning(f"Not enough games to use a {window_size}-game training window for {stat}. Skipping.")
+            continue
+
+        X_train, X_test = X.iloc[-(window_size+1):-1], X.iloc[-1:]
+        y_train, y_test = y.iloc[-(window_size+1):-1], y.iloc[-1:]
 
         try:
             lgbm = lgb.LGBMRegressor()
             lgbm.fit(X_train, y_train)
-            lgb_train_preds = lgbm.predict(X_train)
             lgb_test_pred = lgbm.predict(X_test)[0]
-            lgb_mae = mean_absolute_error(y_train, lgb_train_preds)
-            lgb_r2 = r2_score(y_train, lgb_train_preds)
-            lgb_rmse = np.sqrt(mean_squared_error(y_train, lgb_train_preds))
+            lgb_mae = mean_absolute_error([y_test.values[0]], [lgb_test_pred])
+            lgb_r2 = r2_score([y_test.values[0]], [lgb_test_pred])
+            lgb_rmse = np.sqrt(mean_squared_error([y_test.values[0]], [lgb_test_pred]))
         except Exception as e:
             lgb_test_pred, lgb_mae, lgb_r2, lgb_rmse = np.nan, np.nan, np.nan, np.nan
             print(f"LightGBM error for {stat}: {e}")
@@ -87,11 +92,10 @@ def run_models(df):
         try:
             xgb = XGBRegressor(verbosity=0)
             xgb.fit(X_train, y_train)
-            xgb_train_preds = xgb.predict(X_train)
             xgb_test_pred = xgb.predict(X_test)[0]
-            xgb_mae = mean_absolute_error(y_train, xgb_train_preds)
-            xgb_r2 = r2_score(y_train, xgb_train_preds)
-            xgb_rmse = np.sqrt(mean_squared_error(y_train, xgb_train_preds))
+            xgb_mae = mean_absolute_error([y_test.values[0]], [xgb_test_pred])
+            xgb_r2 = r2_score([y_test.values[0]], [xgb_test_pred])
+            xgb_rmse = np.sqrt(mean_squared_error([y_test.values[0]], [xgb_test_pred]))
         except Exception as e:
             xgb_test_pred, xgb_mae, xgb_r2, xgb_rmse = np.nan, np.nan, np.nan, np.nan
             print(f"XGBoost error for {stat}: {e}")
@@ -185,7 +189,10 @@ if player_name:
     team_map = get_team_abbr_map()
     team_strength = get_team_strength()
     df = preprocess_games(gamelog, team_strength, team_map)
-    prediction, lower, upper, compare_df = run_models(df)
+
+    # 🎛️ User-selectable training window
+    window_size = st.slider("Select training window (games)", min_value=3, max_value=10, value=5)
+    prediction, lower, upper, compare_df = run_models(df, window_size=window_size)
 
     team_abbr_list = sorted(team_map.keys())
     next_opponent = st.selectbox("Select next opponent team", team_abbr_list)
@@ -200,7 +207,8 @@ if player_name:
         st.subheader("🔮 Ensemble Prediction (LGB + XGB)")
         cols = st.columns(4)
         for i, stat in enumerate(['MIN', 'PTS', 'REB', 'AST']):
-            cols[i].metric(stat, f"{prediction[stat]:.1f}", f"{lower[stat]:.1f} – {upper[stat]:.1f}")
+            if stat in prediction:
+                cols[i].metric(stat, f"{prediction[stat]:.1f}", f"{lower[stat]:.1f} – {upper[stat]:.1f}")
 
         with st.expander("📊 Compare LightGBM vs XGBoost"):
             st.dataframe(compare_df)
