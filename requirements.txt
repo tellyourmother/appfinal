@@ -1,10 +1,9 @@
-sstreamlit
+streamlit
 pandas
 numpy
 matplotlib
 seaborn
 plotly
-lightgbm
-xgboost
 scikit-learn
+xgboost==1.7.5
 nba-api
