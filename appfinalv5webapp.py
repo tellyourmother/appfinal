@@ -72,31 +72,46 @@ def run_models(df):
         X_train, X_test = X.iloc[:-1], X.iloc[-1:]
         y_train, y_test = y.iloc[:-1], y.iloc[-1:]
 
-        lgbm = lgb.LGBMRegressor()
-        lgbm.fit(X_train, y_train)
-        lgb_pred = lgbm.predict(X_test)[0]
-        lgb_mae = mean_absolute_error(y_train, lgbm.predict(X_train))
+        # LightGBM
+        try:
+            lgbm = lgb.LGBMRegressor()
+            lgbm.fit(X_train, y_train)
+            lgb_train_preds = lgbm.predict(X_train)
+            lgb_test_pred = lgbm.predict(X_test)[0]
+            lgb_mae = mean_absolute_error(y_train, lgb_train_preds)
+        except Exception as e:
+            lgb_test_pred, lgb_mae = np.nan, np.nan
+            print(f"LightGBM error for {stat}: {e}")
 
-        xgb = XGBRegressor(verbosity=0)
-        xgb.fit(X_train, y_train)
-        xgb_pred = xgb.predict(X_test)[0]
-        xgb_mae = mean_absolute_error(y_train, xgb.predict(X_train))
+        # XGBoost
+        try:
+            xgb = XGBRegressor(verbosity=0)
+            xgb.fit(X_train, y_train)
+            xgb_train_preds = xgb.predict(X_train)
+            xgb_test_pred = xgb.predict(X_test)[0]
+            xgb_mae = mean_absolute_error(y_train, xgb_train_preds)
+        except Exception as e:
+            xgb_test_pred, xgb_mae = np.nan, np.nan
+            print(f"XGBoost error for {stat}: {e}")
 
-        prediction[stat] = round((lgb_pred + xgb_pred) / 2, 2)
-        lower[stat] = round(min(lgb_pred, xgb_pred), 2)
-        upper[stat] = round(max(lgb_pred, xgb_pred), 2)
+        # Ensemble prediction + confidence bounds
+        ensemble_pred = np.nanmean([lgb_test_pred, xgb_test_pred])
+        prediction[stat] = round(ensemble_pred, 2)
+        lower[stat] = round(min(lgb_test_pred, xgb_test_pred), 2)
+        upper[stat] = round(max(lgb_test_pred, xgb_test_pred), 2)
 
         results.append({
             'Stat': stat,
             'True': round(y_test.values[0], 2),
-            'LightGBM_Pred': round(lgb_pred, 2),
-            'XGBoost_Pred': round(xgb_pred, 2),
+            'LightGBM_Pred': round(lgb_test_pred, 2),
+            'XGBoost_Pred': round(xgb_test_pred, 2),
             'LightGBM_MAE': round(lgb_mae, 2),
             'XGBoost_MAE': round(xgb_mae, 2)
         })
 
     compare_df = pd.DataFrame(results)
     return prediction, lower, upper, compare_df
+
 
 # ========== VISUALIZATIONS ==========
 def plot_stat_trend(df, prediction):
