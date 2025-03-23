@@ -7,4 +7,4 @@ plotly>=5.9.0
 lightgbm>=3.3.5
 xgboost>=1.7.6
 scikit-learn>=1.2.0
-nba-api>=1.1.11
+nba-api
