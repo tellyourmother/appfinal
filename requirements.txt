@@ -1,9 +1,10 @@
 streamlit
 nba_api
-lightgbm
 pandas
 numpy
 matplotlib
 seaborn
 plotly
+lightgbm
+xgboost
 scikit-learn
