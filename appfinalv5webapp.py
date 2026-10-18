@@ -2,10 +2,7 @@ import streamlit as st
 from nba_api.stats.static import players, teams
 from nba_api.stats.endpoints import PlayerGameLog, LeagueDashTeamStats
 import pandas as pd
-import numpy as np
-import lightgbm as lgb
-from xgboost import XGBRegressor
-from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
+from dashboard_models import EVALUATION_NOTE, MIN_WINDOW, MAX_WINDOW, run_models
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
@@ -42,6 +39,8 @@ def load_game_log(player_id):
 # ========== DATA PREP ==========
 def preprocess_games(df, team_strength_df, team_map):
     df = df.copy()
+    if df.empty:
+        return df
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = df.sort_values('GAME_DATE')
     df['HOME'] = df['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
@@ -57,70 +56,6 @@ def preprocess_games(df, team_strength_df, team_map):
     df = df.dropna().reset_index(drop=True)
     return df
 
-# ========== MODEL: LightGBM vs XGBoost ==========
-def run_models(df, window_size=5):
-    stats = ['PTS', 'REB', 'AST', 'MIN']
-    prediction = {}
-    lower = {}
-    upper = {}
-    features = [col for col in df.columns if '_prev' in col]
-    X = df[features]
-    results = []
-
-    for stat in stats:
-        y = df[stat]
-
-        # Check if enough data for window
-        if len(df) < window_size + 1:
-            st.warning(f"Not enough games to use a {window_size}-game training window for {stat}. Skipping.")
-            continue
-
-        X_train, X_test = X.iloc[-(window_size+1):-1], X.iloc[-1:]
-        y_train, y_test = y.iloc[-(window_size+1):-1], y.iloc[-1:]
-
-        try:
-            lgbm = lgb.LGBMRegressor()
-            lgbm.fit(X_train, y_train)
-            lgb_test_pred = lgbm.predict(X_test)[0]
-            lgb_mae = mean_absolute_error([y_test.values[0]], [lgb_test_pred])
-            lgb_r2 = r2_score([y_test.values[0]], [lgb_test_pred])
-            lgb_rmse = np.sqrt(mean_squared_error([y_test.values[0]], [lgb_test_pred]))
-        except Exception as e:
-            lgb_test_pred, lgb_mae, lgb_r2, lgb_rmse = np.nan, np.nan, np.nan, np.nan
-            print(f"LightGBM error for {stat}: {e}")
-
-        try:
-            xgb = XGBRegressor(verbosity=0)
-            xgb.fit(X_train, y_train)
-            xgb_test_pred = xgb.predict(X_test)[0]
-            xgb_mae = mean_absolute_error([y_test.values[0]], [xgb_test_pred])
-            xgb_r2 = r2_score([y_test.values[0]], [xgb_test_pred])
-            xgb_rmse = np.sqrt(mean_squared_error([y_test.values[0]], [xgb_test_pred]))
-        except Exception as e:
-            xgb_test_pred, xgb_mae, xgb_r2, xgb_rmse = np.nan, np.nan, np.nan, np.nan
-            print(f"XGBoost error for {stat}: {e}")
-
-        ensemble_pred = np.nanmean([lgb_test_pred, xgb_test_pred])
-        prediction[stat] = round(ensemble_pred, 2)
-        lower[stat] = round(min(lgb_test_pred, xgb_test_pred), 2)
-        upper[stat] = round(max(lgb_test_pred, xgb_test_pred), 2)
-
-        results.append({
-            'Stat': stat,
-            'True': round(y_test.values[0], 2),
-            'LightGBM_Pred': round(lgb_test_pred, 2),
-            'XGBoost_Pred': round(xgb_test_pred, 2),
-            'LightGBM_MAE': round(lgb_mae, 2),
-            'XGBoost_MAE': round(xgb_mae, 2),
-            'LightGBM_R2': round(lgb_r2, 2),
-            'XGBoost_R2': round(xgb_r2, 2),
-            'LightGBM_RMSE': round(lgb_rmse, 2),
-            'XGBoost_RMSE': round(xgb_rmse, 2),
-        })
-
-    compare_df = pd.DataFrame(results)
-    return prediction, lower, upper, compare_df
-
 # ========== VISUALIZATIONS ==========
 def plot_stat_trend(df, prediction):
     fig = make_subplots(rows=2, cols=2, subplot_titles=['MIN', 'PTS', 'REB', 'AST'])
@@ -129,14 +64,18 @@ def plot_stat_trend(df, prediction):
     df['Label'] = df['GAME_DATE'].dt.strftime('%b %d') + ' ' + df['MATCHUP']
     for i, stat in enumerate(stat_map):
         row, col = i//2 + 1, i%2 + 1
-        y_vals = list(df[stat]) + [prediction[stat]]
-        x_vals = list(df['Label']) + ['Predicted']
+        y_vals = list(df[stat])
+        x_vals = list(df['Label'])
         avg_val = df[stat].mean()
-        colors = ['tomato' if val > avg_val else 'skyblue' for val in df[stat]] + ['gold']
+        colors = ['tomato' if val > avg_val else 'skyblue' for val in df[stat]]
+        if stat in prediction:
+            y_vals.append(prediction[stat])
+            x_vals.append('Held-out estimate')
+            colors.append('gold')
         fig.add_trace(go.Bar(x=x_vals, y=y_vals, marker_color=colors, name=stat), row=row, col=col)
-        fig.add_trace(go.Scatter(x=x_vals[:-1], y=df[stat].rolling(5).mean(), mode='lines',
+        fig.add_trace(go.Scatter(x=df['Label'], y=df[stat].rolling(5).mean(), mode='lines',
                                  line=dict(color='black', dash='dash'), name='Rolling Avg'), row=row, col=col)
-    fig.update_layout(height=800, title="📈 Last 15 Games + Prediction")
+    fig.update_layout(height=800, title="📈 Game Trends + Held-out Estimate")
     st.plotly_chart(fig, use_container_width=True)
 
 def stat_vs_team_bar(df):
@@ -191,8 +130,8 @@ if player_name:
     df = preprocess_games(gamelog, team_strength, team_map)
 
     # 🎛️ User-selectable training window
-    window_size = st.slider("Select training window (games)", min_value=3, max_value=10, value=5)
-    prediction, lower, upper, compare_df = run_models(df, window_size=window_size)
+    window_size = st.slider("Select training window (games)", min_value=MIN_WINDOW, max_value=MAX_WINDOW, value=5)
+    prediction, lower, upper, compare_df = run_models(df, window_size=window_size, warn=st.warning)
 
     team_abbr_list = sorted(team_map.keys())
     next_opponent = st.selectbox("Select next opponent team", team_abbr_list)
@@ -204,23 +143,45 @@ if player_name:
     ])
 
     with tabs[0]:
-        st.subheader("🔮 Ensemble Prediction (LGB + XGB)")
+        st.subheader("🔮 Model Estimate (LGB + XGB)")
+        st.info("These estimates evaluate the latest recorded game, not the next opponent. "
+                "Training on 3–10 games is exploratory and may overfit.")
+        st.caption("The displayed range is the spread of successful model outputs, "
+                   "not a confidence or prediction interval.")
         cols = st.columns(4)
         for i, stat in enumerate(['MIN', 'PTS', 'REB', 'AST']):
             if stat in prediction:
-                cols[i].metric(stat, f"{prediction[stat]:.1f}", f"{lower[stat]:.1f} – {upper[stat]:.1f}")
+                row = compare_df.loc[compare_df['Stat'] == stat].iloc[0]
+                model_count = sum(pd.notna(row[f'{name}_Pred']) for name in ('LightGBM', 'XGBoost'))
+                spread = (f"{lower[stat]:.1f} – {upper[stat]:.1f}"
+                          if model_count == 2 else "Single model; range unavailable")
+                cols[i].metric(stat, f"{prediction[stat]:.1f}", spread, delta_color="off")
+            else:
+                cols[i].metric(stat, "Unavailable")
 
         with st.expander("📊 Compare LightGBM vs XGBoost"):
-            st.dataframe(compare_df)
-            metric_melt = compare_df.melt(id_vars='Stat', value_vars=[
-                'LightGBM_MAE', 'XGBoost_MAE',
-                'LightGBM_R2', 'XGBoost_R2',
-                'LightGBM_RMSE', 'XGBoost_RMSE'
-            ], var_name='Metric_Model', value_name='Value')
-            metric_melt[['Metric', 'Model']] = metric_melt['Metric_Model'].str.extract(r'(.*)_(LightGBM|XGBoost)')
-            fig = px.bar(metric_melt, x='Stat', y='Value', color='Model', facet_row='Metric',
-                         barmode='group', height=600, title="📉 Model Metric Comparison")
-            st.plotly_chart(fig, use_container_width=True)
+            st.info(EVALUATION_NOTE)
+            if compare_df.empty:
+                st.info("No model comparison is available for this training window.")
+            else:
+                st.dataframe(compare_df)
+                metric_melt = compare_df.melt(id_vars='Stat', value_vars=[
+                    'LightGBM_MAE', 'XGBoost_MAE',
+                    'LightGBM_RMSE', 'XGBoost_RMSE'
+                ], var_name='Metric_Model', value_name='Value').dropna(subset=['Value'])
+                if metric_melt.empty:
+                    st.info("Neither model returned valid evaluation results.")
+                else:
+                    metric_melt[['Model', 'Metric']] = metric_melt['Metric_Model'].str.extract(
+                        r'^(LightGBM|XGBoost)_(MAE|RMSE)$')
+                    fig = px.bar(metric_melt, x='Stat', y='Value', color='Model', facet_row='Metric',
+                                 barmode='group', height=600,
+                                 title="📉 Model Errors on One Held-out Game")
+                    st.plotly_chart(fig, use_container_width=True)
+
+    if df.empty:
+        st.info("No usable game history is available for the visualizations.")
+        st.stop()
 
     with tabs[1]:
         plot_stat_trend(df, prediction)
